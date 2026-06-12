@@ -187,6 +187,8 @@ def score_system():
 # -----------------
 
 data, score, signal, position, reasons, vix = score_system()
+st.write("DEBUG COLUMNS")
+st.write(data.columns)
 
 st.title("🚀 SOXL Quant Pro Dashboard")
 
