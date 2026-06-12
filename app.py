@@ -9,10 +9,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# -----------------
-# DATA
-# -----------------
-
 TICKERS = [
     "SOXL",
     "SOXX",
@@ -24,31 +20,31 @@ TICKERS = [
 
 @st.cache_data(ttl=3600)
 def load_data():
-
-    data = yf.download(
+    return yf.download(
         TICKERS,
         period="3y",
-        group_by="ticker",
         auto_adjust=True,
-        progress=False
+        progress=False,
+        group_by="ticker"
     )
 
-    return data
-
-# -----------------
-# INDICATORS
-# -----------------
+def get_close(data, ticker):
+    try:
+        return data[ticker]["Close"].dropna()
+    except:
+        return pd.Series(dtype=float)
 
 def build_indicators(close):
 
-    df = pd.DataFrame()
+    if len(close) < 250:
+        return None
+
+    df = pd.DataFrame(index=close.index)
 
     df["Close"] = close
-
     df["SMA20"] = ta.trend.sma_indicator(close, 20)
     df["SMA50"] = ta.trend.sma_indicator(close, 50)
     df["SMA200"] = ta.trend.sma_indicator(close, 200)
-
     df["RSI"] = ta.momentum.rsi(close, 14)
 
     macd = ta.trend.MACD(close)
@@ -56,35 +52,29 @@ def build_indicators(close):
     df["MACD"] = macd.macd()
     df["SIGNAL"] = macd.macd_signal()
 
-    return df
+    return df.dropna()
 
-# -----------------
-# SCORE
-# -----------------
+data = load_data()
 
-def score_system():
+soxl_close = get_close(data, "SOXL")
+soxx_close = get_close(data, "SOXX")
+nvda_close = get_close(data, "NVDA")
+amd_close  = get_close(data, "AMD")
+qqq_close  = get_close(data, "QQQ")
+vix_close  = get_close(data, "^VIX")
 
-    data = load_data()
+soxl = build_indicators(soxl_close)
+soxx = build_indicators(soxx_close)
+nvda = build_indicators(nvda_close)
+amd  = build_indicators(amd_close)
+qqq  = build_indicators(qqq_close)
 
-    soxl = build_indicators(data["SOXL"]["Close"])
-    soxx = build_indicators(data["SOXX"]["Close"])
-    nvda = build_indicators(data["NVDA"]["Close"])
-    amd  = build_indicators(data["AMD"]["Close"])
-    qqq  = build_indicators(data["QQQ"]["Close"])
+score = 0
+reasons = []
+
+if soxl is not None:
 
     s = soxl.iloc[-1]
-    x = soxx.iloc[-1]
-    n = nvda.iloc[-1]
-    a = amd.iloc[-1]
-    q = qqq.iloc[-1]
-
-    vix = float(data["^VIX"]["Close"].iloc[-1])
-
-    score = 0
-
-    reasons = []
-
-    # SOXL
 
     if s["Close"] > s["SMA20"]:
         score += 5
@@ -96,99 +86,74 @@ def score_system():
 
     if 50 < s["RSI"] < 70:
         score += 5
-        reasons.append("✅ RSI 건강")
+        reasons.append("✅ RSI 양호")
 
     if s["MACD"] > s["SIGNAL"]:
         score += 5
         reasons.append("✅ MACD 상승")
 
-    # SOXX
+if soxx is not None:
+    x = soxx.iloc[-1]
 
     if x["Close"] > x["SMA200"]:
         score += 20
         reasons.append("✅ 반도체 업사이클")
 
-    # NVDA
+if nvda is not None:
+    n = nvda.iloc[-1]
 
     if n["Close"] > n["SMA50"]:
         score += 10
         reasons.append("✅ NVDA 강세")
 
-    # AMD
+if amd is not None:
+    a = amd.iloc[-1]
 
     if a["Close"] > a["SMA50"]:
         score += 10
         reasons.append("✅ AMD 강세")
 
-    # QQQ
+if qqq is not None:
+    q = qqq.iloc[-1]
 
     if q["Close"] > q["SMA200"]:
         score += 20
         reasons.append("✅ 나스닥 강세")
 
-    # VIX
+vix = float(vix_close.iloc[-1])
 
-    if vix < 18:
-        score += 20
-        reasons.append("✅ VIX 안정")
+if vix < 18:
+    score += 20
+    reasons.append("✅ VIX 안정")
 
-    elif vix < 25:
-        score += 10
-        reasons.append("⚠️ VIX 보통")
+elif vix < 25:
+    score += 10
+    reasons.append("⚠️ VIX 보통")
 
-    else:
-        reasons.append("❌ VIX 위험")
+else:
+    reasons.append("❌ VIX 위험")
 
-    # SIGNAL
+if score >= 85:
+    signal = "🚀 STRONG BUY"
+elif score >= 70:
+    signal = "🟢 BUY"
+elif score >= 50:
+    signal = "🟡 HOLD"
+elif score >= 30:
+    signal = "🟠 SELL"
+else:
+    signal = "🔴 STRONG SELL"
 
-    if score >= 85:
-        signal = "🚀 STRONG BUY"
-
-    elif score >= 70:
-        signal = "🟢 BUY"
-
-    elif score >= 50:
-        signal = "🟡 HOLD"
-
-    elif score >= 30:
-        signal = "🟠 SELL"
-
-    else:
-        signal = "🔴 STRONG SELL"
-
-    # POSITION
-
-    if score >= 90:
-        position = "100%"
-
-    elif score >= 80:
-        position = "75%"
-
-    elif score >= 70:
-        position = "50%"
-
-    elif score >= 60:
-        position = "25%"
-
-    else:
-        position = "0%"
-
-    return (
-        data,
-        score,
-        signal,
-        position,
-        reasons,
-        vix
-    )
-
-# -----------------
-# RUN
-# -----------------
-
-data, score, signal, position, reasons, vix = score_system()
-st.write("DEBUG COLUMNS")
-st.write(data.columns)
+if score >= 90:
+    position = "100%"
+elif score >= 80:
+    position = "75%"
+elif score >= 70:
+    position = "50%"
+elif score >= 60:
+    position = "25%"
+else:
+    position = "0%"
 
 st.title("🚀 SOXL Quant Pro Dashboard")
 
@@ -198,80 +163,49 @@ c1.metric("Score", score)
 c2.metric("Signal", signal)
 c3.metric("Position", position)
 
-# -----------------
-# Gauge
-# -----------------
-
-fig = go.Figure(
+gauge = go.Figure(
     go.Indicator(
         mode="gauge+number",
         value=score,
         title={"text": "Market Score"},
-        gauge={
-            "axis": {"range": [0,100]}
-        }
+        gauge={"axis": {"range": [0, 100]}}
     )
 )
 
 st.plotly_chart(
-    fig,
+    gauge,
     use_container_width=True
 )
-
-# -----------------
-# Status
-# -----------------
 
 st.subheader("Market Overview")
 
 status = pd.DataFrame({
-    "Asset":[
-        "SOXX",
-        "NVDA",
-        "AMD",
-        "QQQ",
-        "VIX"
-    ],
-    "Price":[
-        round(float(data["SOXX"]["Close"].iloc[-1]),2),
-        round(float(data["NVDA"]["Close"].iloc[-1]),2),
-        round(float(data["AMD"]["Close"].iloc[-1]),2),
-        round(float(data["QQQ"]["Close"].iloc[-1]),2),
+    "Asset": ["SOXL","SOXX","NVDA","AMD","QQQ","VIX"],
+    "Price": [
+        round(float(soxl_close.iloc[-1]),2),
+        round(float(soxx_close.iloc[-1]),2),
+        round(float(nvda_close.iloc[-1]),2),
+        round(float(amd_close.iloc[-1]),2),
+        round(float(qqq_close.iloc[-1]),2),
         round(vix,2)
     ]
 })
 
-st.dataframe(
-    status,
-    use_container_width=True
-)
-
-# -----------------
-# Reasons
-# -----------------
+st.dataframe(status, use_container_width=True)
 
 st.subheader("Signal Reasons")
 
 for r in reasons:
     st.write(r)
 
-# -----------------
-# Chart
-# -----------------
-
 st.subheader("SOXL Price")
-
-price = pd.DataFrame({
-    "Date": data["SOXL"]["Close"].index,
-    "Close": data["SOXL"]["Close"].values
-})
 
 chart = go.Figure()
 
 chart.add_trace(
     go.Scatter(
-        x=price["Date"],
-        y=price["Close"],
+        x=soxl_close.index,
+        y=soxl_close.values,
         mode="lines",
         name="SOXL"
     )
@@ -282,4 +216,4 @@ st.plotly_chart(
     use_container_width=True
 )
 
-st.caption("Auto-updated every hour")
+st.caption("Updated automatically every hour")
