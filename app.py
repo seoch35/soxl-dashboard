@@ -5,43 +5,25 @@ import pandas as pd
 import ta
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="SOXL Quant Pro V9 MTF", layout="wide")
-
-# -----------------------------
-# DATA
-# -----------------------------
+st.set_page_config(page_title="SOXL Quant Pro V10", layout="wide")
 
 @st.cache_data(ttl=300)
-def load_daily():
-    df = yf.download("SOXL", period="3y", auto_adjust=True, progress=False)
+def load_tf(period, interval=None):
+    kwargs = dict(tickers="SOXL", period=period, auto_adjust=True, progress=False)
+    if interval:
+        kwargs["interval"] = interval
+    df = yf.download(**kwargs)
+
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
+
     return df.dropna()
 
-@st.cache_data(ttl=300)
-def load_hourly():
-    df = yf.download("SOXL", period="730d", interval="1h", auto_adjust=True, progress=False)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return df.dropna()
-
-@st.cache_data(ttl=300)
-def load_30m():
-    df = yf.download("SOXL", period="60d", interval="30m", auto_adjust=True, progress=False)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return df.dropna()
-
-# -----------------------------
-# INDICATORS
-# -----------------------------
-
-def analyze(df):
-
+def score_tf(df):
     close = df["Close"].astype(float)
     high = df["High"].astype(float)
     low = df["Low"].astype(float)
-    volume = df["Volume"].astype(float)
+    vol = df["Volume"].astype(float)
 
     ema20 = ta.trend.ema_indicator(close, 20)
     ema60 = ta.trend.ema_indicator(close, 60)
@@ -49,115 +31,125 @@ def analyze(df):
     rsi = ta.momentum.rsi(close, 14)
 
     macd = ta.trend.MACD(close)
+    macd_ok = macd.macd().iloc[-1] > macd.macd_signal().iloc[-1]
 
-    mfi = ta.volume.money_flow_index(
-        high, low, close, volume, window=14
-    )
+    mfi = ta.volume.money_flow_index(high, low, close, vol, window=14)
 
     ichi = ta.trend.IchimokuIndicator(high, low)
+    cloud_ok = close.iloc[-1] > max(
+        ichi.ichimoku_a().iloc[-1],
+        ichi.ichimoku_b().iloc[-1]
+    )
 
-    span_a = ichi.ichimoku_a()
-    span_b = ichi.ichimoku_b()
-
-    last_close = float(close.iloc[-1])
-
-    conditions = 0
+    score = 0
 
     if ema20.iloc[-1] > ema60.iloc[-1]:
-        conditions += 1
+        score += 2
+
+    if macd_ok:
+        score += 2
+
+    if cloud_ok:
+        score += 2
 
     if 50 <= rsi.iloc[-1] <= 75:
-        conditions += 1
-
-    if macd.macd().iloc[-1] > macd.macd_signal().iloc[-1]:
-        conditions += 1
+        score += 1
 
     if mfi.iloc[-1] > 50:
-        conditions += 1
-
-    if last_close > max(span_a.iloc[-1], span_b.iloc[-1]):
-        conditions += 1
+        score += 1
 
     return {
-        "score": conditions,
-        "close": round(last_close, 2),
-        "rsi": round(float(rsi.iloc[-1]), 2)
+        "score": score,
+        "close": float(close.iloc[-1]),
+        "ema20": float(ema20.iloc[-1]),
+        "rsi": float(rsi.iloc[-1]),
+        "mfi": float(mfi.iloc[-1])
     }
 
-# -----------------------------
-# LOAD
-# -----------------------------
+daily_df = load_tf("3y")
+hour_df = load_tf("730d", "1h")
+m30_df = load_tf("60d", "30m")
 
-daily = analyze(load_daily())
-hourly = analyze(load_hourly())
-m30 = analyze(load_30m())
+daily = score_tf(daily_df)
+hourly = score_tf(hour_df)
+m30 = score_tf(m30_df)
 
-total_score = daily["score"] + hourly["score"] + m30["score"]
+base_score = daily["score"] + hourly["score"] + m30["score"]
 
-if total_score >= 13:
+# 과열 필터
+penalty = 0
+warnings = []
+
+if daily["rsi"] > 75:
+    penalty += 3
+    warnings.append("RSI 과열")
+
+if daily["mfi"] > 80:
+    penalty += 2
+    warnings.append("MFI 과열")
+
+distance = ((daily["close"] - daily["ema20"]) / daily["ema20"]) * 100
+
+if distance > 12:
+    penalty += 3
+    warnings.append("EMA20 대비 과도한 이격")
+
+recent5 = daily_df["Close"].pct_change(5).iloc[-1] * 100
+
+if recent5 > 15:
+    penalty += 2
+    warnings.append("최근 5일 급등")
+
+final_score = max(0, base_score - penalty)
+
+if final_score >= 16:
     signal = "🚀 STRONG BUY"
     position = "100%"
-elif total_score >= 10:
+elif final_score >= 12:
     signal = "🟢 BUY"
     position = "75%"
-elif total_score >= 7:
+elif final_score >= 8:
     signal = "🟡 HOLD"
     position = "50%"
-elif total_score >= 4:
+elif final_score >= 4:
     signal = "🟠 SELL"
     position = "25%"
 else:
     signal = "🔴 STRONG SELL"
     position = "0%"
 
-# -----------------------------
-# UI
-# -----------------------------
-
-st.title("🚀 SOXL Quant Pro V9 (MTF)")
+st.title("🚀 SOXL Quant Pro V10")
 
 c1, c2, c3 = st.columns(3)
-
-c1.metric("MTF Score", f"{total_score}/15")
+c1.metric("Trend Score", f"{final_score}/18")
 c2.metric("Signal", signal)
 c3.metric("Position", position)
 
-st.subheader("Multi Time Frame Analysis")
+st.subheader("MTF Trend")
 
-table = pd.DataFrame({
-    "Timeframe": ["30 Minute", "1 Hour", "Daily"],
-    "Score": [
-        f'{m30["score"]}/5',
-        f'{hourly["score"]}/5',
-        f'{daily["score"]}/5'
-    ],
-    "RSI": [
-        m30["rsi"],
-        hourly["rsi"],
-        daily["rsi"]
-    ],
-    "Close": [
-        m30["close"],
-        hourly["close"],
-        daily["close"]
-    ]
+mtf = pd.DataFrame({
+    "Timeframe":["30m","1h","Daily"],
+    "Score":[m30["score"], hourly["score"], daily["score"]],
+    "RSI":[round(m30["rsi"],1), round(hourly["rsi"],1), round(daily["rsi"],1)]
 })
 
-st.dataframe(table, use_container_width=True)
+st.dataframe(mtf, use_container_width=True)
 
-st.subheader("SOXL Daily Chart")
+st.subheader("Overheat Filters")
 
-daily_df = load_daily()
+if warnings:
+    for w in warnings:
+        st.write("⚠️", w)
+else:
+    st.write("✅ 과열 신호 없음")
 
 fig = go.Figure()
-
 fig.add_trace(go.Scatter(
     x=daily_df.index,
     y=daily_df["Close"],
-    mode="lines",
     name="SOXL"
 ))
 
 st.plotly_chart(fig, use_container_width=True)
 
-st.caption("V9 MTF Model | 30m + 1h + Daily | Refresh every 5 minutes")
+st.caption("V10 | MTF + Overheat Filter")
