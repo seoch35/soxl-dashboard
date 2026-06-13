@@ -5,152 +5,159 @@ import pandas as pd
 import ta
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="SOXL Quant Pro V8.1", layout="wide")
+st.set_page_config(page_title="SOXL Quant Pro V9 MTF", layout="wide")
 
-@st.cache_data(ttl=3600)
-def load_data():
-    df = yf.download(
-        "SOXL",
-        period="3y",
-        auto_adjust=True,
-        progress=False
-    )
+# -----------------------------
+# DATA
+# -----------------------------
 
-    # yfinance 반환형 정규화
+@st.cache_data(ttl=300)
+def load_daily():
+    df = yf.download("SOXL", period="3y", auto_adjust=True, progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-
     return df.dropna()
 
-def build_indicators(df):
-    close = pd.Series(df["Close"]).astype(float)
-    high = pd.Series(df["High"]).astype(float)
-    low = pd.Series(df["Low"]).astype(float)
-    volume = pd.Series(df["Volume"]).astype(float)
+@st.cache_data(ttl=300)
+def load_hourly():
+    df = yf.download("SOXL", period="730d", interval="1h", auto_adjust=True, progress=False)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df.dropna()
 
-    out = pd.DataFrame(index=df.index)
+@st.cache_data(ttl=300)
+def load_30m():
+    df = yf.download("SOXL", period="60d", interval="30m", auto_adjust=True, progress=False)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df.dropna()
 
-    out["Close"] = close
-    out["EMA20"] = ta.trend.ema_indicator(close, window=20)
-    out["EMA60"] = ta.trend.ema_indicator(close, window=60)
+# -----------------------------
+# INDICATORS
+# -----------------------------
 
-    out["RSI"] = ta.momentum.rsi(close, window=14)
+def analyze(df):
+
+    close = df["Close"].astype(float)
+    high = df["High"].astype(float)
+    low = df["Low"].astype(float)
+    volume = df["Volume"].astype(float)
+
+    ema20 = ta.trend.ema_indicator(close, 20)
+    ema60 = ta.trend.ema_indicator(close, 60)
+
+    rsi = ta.momentum.rsi(close, 14)
 
     macd = ta.trend.MACD(close)
-    out["MACD"] = macd.macd()
-    out["MACD_SIGNAL"] = macd.macd_signal()
 
-    out["MFI"] = ta.volume.money_flow_index(
+    mfi = ta.volume.money_flow_index(
         high, low, close, volume, window=14
     )
 
-    ichi = ta.trend.IchimokuIndicator(high=high, low=low)
-    out["SPAN_A"] = ichi.ichimoku_a()
-    out["SPAN_B"] = ichi.ichimoku_b()
+    ichi = ta.trend.IchimokuIndicator(high, low)
 
-    out["HIGH_20"] = close.rolling(20).max()
-    out["LOW_20"] = close.rolling(20).min()
+    span_a = ichi.ichimoku_a()
+    span_b = ichi.ichimoku_b()
 
-    return out.dropna()
+    last_close = float(close.iloc[-1])
 
-data = load_data()
-ind = build_indicators(data)
+    conditions = 0
 
-last = ind.iloc[-1]
+    if ema20.iloc[-1] > ema60.iloc[-1]:
+        conditions += 1
 
-conditions = []
+    if 50 <= rsi.iloc[-1] <= 75:
+        conditions += 1
 
-ema_ok = last["EMA20"] > last["EMA60"]
-conditions.append(("EMA20 > EMA60", ema_ok))
+    if macd.macd().iloc[-1] > macd.macd_signal().iloc[-1]:
+        conditions += 1
 
-rsi_ok = 50 <= last["RSI"] <= 70
-conditions.append(("RSI 50~70", rsi_ok))
+    if mfi.iloc[-1] > 50:
+        conditions += 1
 
-macd_ok = last["MACD"] > last["MACD_SIGNAL"]
-conditions.append(("MACD Bullish", macd_ok))
+    if last_close > max(span_a.iloc[-1], span_b.iloc[-1]):
+        conditions += 1
 
-mfi_ok = last["MFI"] > 50
-conditions.append(("MFI > 50", mfi_ok))
+    return {
+        "score": conditions,
+        "close": round(last_close, 2),
+        "rsi": round(float(rsi.iloc[-1]), 2)
+    }
 
-cloud_top = max(last["SPAN_A"], last["SPAN_B"])
-cloud_ok = last["Close"] > cloud_top
-conditions.append(("Above Ichimoku Cloud", cloud_ok))
+# -----------------------------
+# LOAD
+# -----------------------------
 
-breakout_ok = last["Close"] >= last["HIGH_20"] * 0.99
-conditions.append(("20-Day Breakout", breakout_ok))
+daily = analyze(load_daily())
+hourly = analyze(load_hourly())
+m30 = analyze(load_30m())
 
-score = sum(1 for _, ok in conditions if ok)
+total_score = daily["score"] + hourly["score"] + m30["score"]
 
-if score >= 6:
+if total_score >= 13:
     signal = "🚀 STRONG BUY"
     position = "100%"
-elif score >= 5:
+elif total_score >= 10:
     signal = "🟢 BUY"
     position = "75%"
-elif score >= 3:
+elif total_score >= 7:
     signal = "🟡 HOLD"
     position = "50%"
-elif score >= 2:
+elif total_score >= 4:
     signal = "🟠 SELL"
     position = "25%"
 else:
     signal = "🔴 STRONG SELL"
     position = "0%"
 
-st.title("🚀 SOXL Technical Signal V8.1")
+# -----------------------------
+# UI
+# -----------------------------
+
+st.title("🚀 SOXL Quant Pro V9 (MTF)")
 
 c1, c2, c3 = st.columns(3)
-c1.metric("Technical Score", f"{score}/6")
+
+c1.metric("MTF Score", f"{total_score}/15")
 c2.metric("Signal", signal)
-c3.metric("Suggested Position", position)
+c3.metric("Position", position)
 
-st.subheader("Technical Conditions")
+st.subheader("Multi Time Frame Analysis")
 
-for name, ok in conditions:
-    st.write(("✅ " if ok else "❌ ") + name)
-
-st.subheader("Indicator Snapshot")
-
-snap = pd.DataFrame({
-    "Metric":[
-        "Close","EMA20","EMA60","RSI","MFI"
+table = pd.DataFrame({
+    "Timeframe": ["30 Minute", "1 Hour", "Daily"],
+    "Score": [
+        f'{m30["score"]}/5',
+        f'{hourly["score"]}/5',
+        f'{daily["score"]}/5'
     ],
-    "Value":[
-        round(float(last["Close"]),2),
-        round(float(last["EMA20"]),2),
-        round(float(last["EMA60"]),2),
-        round(float(last["RSI"]),2),
-        round(float(last["MFI"]),2)
+    "RSI": [
+        m30["rsi"],
+        hourly["rsi"],
+        daily["rsi"]
+    ],
+    "Close": [
+        m30["close"],
+        hourly["close"],
+        daily["close"]
     ]
 })
 
-st.dataframe(snap, use_container_width=True)
+st.dataframe(table, use_container_width=True)
 
-st.subheader("SOXL Price & Trend")
+st.subheader("SOXL Daily Chart")
+
+daily_df = load_daily()
 
 fig = go.Figure()
 
 fig.add_trace(go.Scatter(
-    x=data.index,
-    y=data["Close"],
+    x=daily_df.index,
+    y=daily_df["Close"],
     mode="lines",
     name="SOXL"
 ))
 
-fig.add_trace(go.Scatter(
-    x=ind.index,
-    y=ind["EMA20"],
-    mode="lines",
-    name="EMA20"
-))
-
-fig.add_trace(go.Scatter(
-    x=ind.index,
-    y=ind["EMA60"],
-    mode="lines",
-    name="EMA60"
-))
-
 st.plotly_chart(fig, use_container_width=True)
 
-st.caption("SOXL Technical Trading Model V8.1")
+st.caption("V9 MTF Model | 30m + 1h + Daily | Refresh every 5 minutes")
